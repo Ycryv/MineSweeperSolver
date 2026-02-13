@@ -2,7 +2,7 @@
   "name": "MineSweeperSolver",
   "short_name": "扫雷求解",
   "description": "扫雷概率计算器",
-  "start_url": "/",
+  "start_url": "/MineSweeperSolver/",
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#4285f4",
