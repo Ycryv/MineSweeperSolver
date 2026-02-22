@@ -1,19 +1,9 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<script>
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.getRegistrations().then(regs => {
-    regs.forEach(reg => reg.unregister());
-  });
-  localStorage.clear();
-  sessionStorage.clear();
-}
-</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
 <title>扫雷概率计算器</title>
-<link rel="manifest" href="manifest.json">
 <style>
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#f2f2f7;padding:12px;color:#333;}
@@ -34,6 +24,8 @@ body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sa
 .input-row{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-bottom:14px;}
 .input-row button{width:44px;height:44px;font-size:18px;font-weight:bold;border:none;border-radius:10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.1);cursor:pointer;transition:transform 0.1s;}
 .input-row button:active{transform:scale(0.95);}
+/* 数字按钮选中高亮 */
+.input-row button.num-active{outline:3px solid #007aff;transform:scale(0.95);}
 .input-row button:nth-child(1){color:#000;}.input-row button:nth-child(2){color:#0044ff;}.input-row button:nth-child(3){color:#008800;}.input-row button:nth-child(4){color:#ff0000;}.input-row button:nth-child(5){color:#000088;}.input-row button:nth-child(6){color:#880000;}.input-row button:nth-child(7){color:#008888;}.input-row button:nth-child(8){color:#000;}.input-row button:nth-child(9){color:#888;}.input-row button:nth-child(10){color:#ff3b30;}.input-row button:nth-child(11){color:#007aff;}
 .board-wrap{display:flex;justify-content:center;overflow-x:auto;margin-top:8px;margin-bottom:20px;}
 #board{display:inline-block;background:#c0c0c0;border:2px solid #888;position:relative;}
@@ -88,7 +80,6 @@ body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sa
 <body>
 <div class="ctrl">
   行<input id="rows" value="9" style="width:60px;"> 列<input id="cols" value="9" style="width:60px;">
-  <!-- 雷数输入框明确：填入的是剩余雷数（即未标记的雷数） -->
   剩余雷<input id="mines" value="-" placeholder="-" style="width:70px;" title="输入数字表示确定的剩余雷数，输入'-'表示剩余雷数未知">
   <button class="reset" onclick="resetAll()">重置</button>
   <button class="calc" onclick="startCalc()">计算</button>
@@ -97,10 +88,10 @@ body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sa
 </div>
 <div id="tip">剩余雷数输入“-”表示未知；已标记的雷( M )自动计入总雷数；WASD/方向键移动</div>
 <div class="input-row">
-  <button onclick="setCell(0)">0</button><button onclick="setCell(1)">1</button><button onclick="setCell(2)">2</button>
-  <button onclick="setCell(3)">3</button><button onclick="setCell(4)">4</button><button onclick="setCell(5)">5</button>
-  <button onclick="setCell(6)">6</button><button onclick="setCell(7)">7</button><button onclick="setCell(8)">8</button>
-  <button onclick="setCell('M')">M</button><button onclick="setCell('?')">?</button>
+  <button onclick="handleNumClick(0)">0</button><button onclick="handleNumClick(1)">1</button><button onclick="handleNumClick(2)">2</button>
+  <button onclick="handleNumClick(3)">3</button><button onclick="handleNumClick(4)">4</button><button onclick="handleNumClick(5)">5</button>
+  <button onclick="handleNumClick(6)">6</button><button onclick="handleNumClick(7)">7</button><button onclick="handleNumClick(8)">8</button>
+  <button onclick="handleNumClick('M')">M</button><button onclick="handleNumClick('?')">?</button>
 </div>
 <div class="board-wrap">
   <div id="board">
@@ -140,20 +131,19 @@ body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sa
 <script>
 // ========== 状态 ==========
 let R=9, C=9;
-let remMinesInput = '-';            // 用户输入的剩余雷数（数字或'-'）
+let remMinesInput = '-';
 let grid = [], prob = [], curProb = [];
 let sel = null, elem = [];
-let isUnknown = true;              // 剩余雷数是否未知
-let flagged = 0;                  // 已标记的雷数 (M)
-let totalMines = 0;              // 总雷数 = flagged + 待定雷（仅在枚举后明确）
-
+let pendingValue = null; // 预选择的填数内容，支持连续填数
+let isUnknown = true;
+let flagged = 0;
+let totalMines = 0;
 // 枚举相关
 let isRunning = false, startTime = 0;
-let probByMines = new Map();      // 总雷数 -> 概率矩阵
-let mineDist = [];               // 总雷数分布 {totalMines, count}
-let curTotalMine = null;        // 当前显示的总雷数(null=整体)
+let probByMines = new Map();
+let mineDist = [];
+let curTotalMine = null;
 let unkCells = [], idxMap, constraints = [], okFlag = true;
-
 // ========== 初始化/重置 ==========
 function resetAll() {
   const r = parseInt(document.getElementById('rows').value) || 9;
@@ -177,15 +167,15 @@ function resetAll() {
   probByMines.clear();
   mineDist = [];
   isRunning = false;
+  // 重置清空所有选数/选格状态
+  pendingValue = null;
+  document.querySelectorAll('.input-row button').forEach(btn => btn.classList.remove('num-active'));
   hideCalcBtn();
   hideResults();
   hideCurBadge();
   render();
-  tip(isUnknown ? 
-    "就绪" : 
-    `剩余雷数 = ${remMinesInput}，标记雷${flagged}个，总雷数 = ${flagged + parseInt(remMinesInput)}`);
+  tip(isUnknown ? "就绪" : `剩余雷数 = ${remMinesInput}，标记雷${flagged}个，总雷数 = ${flagged + parseInt(remMinesInput)}`);
 }
-
 function render() {
   const b = document.getElementById('board');
   const badge = document.getElementById('curMineDisplay');
@@ -206,33 +196,71 @@ function render() {
   }
   for (let i = 0; i < R; i++) for (let j = 0; j < C; j++) updateCell(i, j);
 }
-
-function select(i, j) {
-  if (sel) elem[sel.i][sel.j].classList.remove('selected');
-  sel = { i, j };
-  elem[i][j].classList.add('selected');
-  tip(`选中(${i+1},${j+1})`);
+// ========== 核心修改：数字按钮点击逻辑 ==========
+function handleNumClick(v) {
+  // 兼容原有逻辑：有选中的格子，直接给选中格子填数
+  if (sel) {
+    setCell(v);
+    return;
+  }
+  // 连续填数逻辑：再次点击同一数字取消选数，否则选中该数字
+  if (pendingValue === v) {
+    pendingValue = null;
+    document.querySelectorAll('.input-row button').forEach(btn => btn.classList.remove('num-active'));
+    tip(`已取消选数【${v}】，可选择格子后填数`);
+  } else {
+    pendingValue = v;
+    document.querySelectorAll('.input-row button').forEach(btn => btn.classList.remove('num-active'));
+    event.target.classList.add('num-active');
+    tip(`已选择【${v}】，可连续点击格子填数，再次点击【${v}】取消选数`);
+  }
 }
-
-function setCell(v) {
-  if (!sel) return;
-  const { i, j } = sel;
-  // 如果之前是M，取消标记时需要减少flagged
-  if (grid[i][j] === 9) flagged--;
-  if (v === '?') grid[i][j] = -2;
-  else if (v === 'M') { grid[i][j] = 9; flagged++; }
-  else grid[i][j] = (v === 0) ? -1 : v;
-  prob[i][j] = curProb[i][j] = null;
-  updateCell(i, j);
-  // 更新tip提示总雷数变化
+// ========== 核心修改：格子点击逻辑 ==========
+function select(i, j) {
+  // 有预选择的数字，直接填数，不清空选数状态，支持连续填
+  if (pendingValue !== null) {
+    setCell(pendingValue, i, j);
+    tip(`已填入【${pendingValue}】到(${i+1},${j+1})，可继续点击其他格子填数`);
+    return;
+  }
+  // 无预选择数字：再次点击当前选中格子取消选格，否则选中新格子
+  if (sel && sel.i === i && sel.j === j) {
+    elem[sel.i][sel.j].classList.remove('selected');
+    sel = null;
+    tip(`已取消选格，可选择数字进行连续填数`);
+  } else {
+    if (sel) elem[sel.i][sel.j].classList.remove('selected');
+    sel = { i, j };
+    elem[i][j].classList.add('selected');
+    tip(`选中(${i+1},${j+1})，点击数字直接填入`);
+  }
+}
+// ========== 重构：填数函数，支持传入坐标 ==========
+function setCell(v, i, j) {
+  // 确定目标格子坐标
+  let targetI, targetJ;
+  if (i !== undefined && j !== undefined) {
+    targetI = i;
+    targetJ = j;
+  } else {
+    if (!sel) return;
+    targetI = sel.i;
+    targetJ = sel.j;
+  }
+  // 更新标记雷计数
+  if (grid[targetI][targetJ] === 9) flagged--;
+  if (v === '?') grid[targetI][targetJ] = -2;
+  else if (v === 'M') { grid[targetI][targetJ] = 9; flagged++; }
+  else grid[targetI][targetJ] = (v === 0) ? -1 : v;
+  // 清空该格子的概率缓存
+  prob[targetI][targetJ] = curProb[targetI][targetJ] = null;
+  updateCell(targetI, targetJ);
+  // 更新提示
   if (!isUnknown) {
     const rem = parseInt(remMinesInput);
     if (!isNaN(rem)) tip(`剩余雷数 = ${rem}，标记雷${flagged}个，总雷数 = ${flagged + rem}`);
-  } else {
-    tip(`标记雷${flagged}个，剩余雷数未知`);
   }
 }
-
 function updateCell(i, j) {
   const c = elem[i][j];
   const val = grid[i][j];
@@ -261,10 +289,8 @@ function updateCell(i, j) {
   }
   if (sel && sel.i === i && sel.j === j) c.classList.add('selected');
 }
-
 function fmtProb(p) { return p === 0 ? '0' : p === 1 ? '100' : (p * 100).toFixed(1).replace(/\.0$/, ''); }
 function tip(s) { document.getElementById('tip').textContent = s; }
-
 // ========== 键盘移动 ==========
 document.addEventListener('keydown', e => {
   if (!sel) return;
@@ -276,7 +302,6 @@ document.addEventListener('keydown', e => {
   if (k === 'arrowright' || k === 'd') j++;
   if (i >= 0 && i < R && j >= 0 && j < C) { select(i, j); e.preventDefault(); }
 });
-
 // ========== 约束构建 ==========
 function buildConstraints() {
   unkCells = [];
@@ -308,8 +333,7 @@ function buildConstraints() {
     }
   }
 }
-
-// ========== 计算入口（剩余雷数未知/已知统一）==========
+// ========== 计算入口 ==========
 function startCalc() {
   if (isRunning) { tip("正在计算中..."); return; }
   buildConstraints();
@@ -319,15 +343,12 @@ function startCalc() {
   isUnknown = (remInput === '-');
   let fixedRemMines = isUnknown ? null : parseInt(remInput);
   if (!isUnknown && (isNaN(fixedRemMines) || fixedRemMines < 0)) { tip("剩余雷数必须为非负整数"); return; }
-  
-  // 此时flagged已经是最新值
   if (!isUnknown && fixedRemMines < 0) { tip("剩余雷数不能为负"); return; }
   
   isRunning = true;
   showCalcBtn();
   startTime = Date.now();
   
-  // 重置概率数据
   prob = Array(R).fill().map(() => Array(C).fill(null));
   curProb = Array(R).fill().map(() => Array(C).fill(null));
   probByMines.clear();
@@ -335,15 +356,15 @@ function startCalc() {
   curTotalMine = null;
   
   const n = unkCells.length;
-  const usedMines = flagged;        // 已标记雷数
-  const maxRemainMines = n;         // 剩余未知格最多能埋的雷
+  const usedMines = flagged;
+  const maxRemainMines = n;
   
   setTimeout(() => {
     const t0 = performance.now();
     let totalValid = 0, examined = 0;
     let minTotalMine = Infinity, maxTotalMine = -Infinity;
     const overallCnt = Array(n).fill(0);
-    const distMap = new Map();      // 总雷数 -> {count, cntArr}
+    const distMap = new Map();
     
     function check(asg) {
       for (const [list, need] of constraints) {
@@ -357,15 +378,13 @@ function startCalc() {
       return true;
     }
     
-    function bt(pos, asg, placed) {   // placed: 当前未翻开格子中埋雷数
+    function bt(pos, asg, placed) {
       if (!isRunning) return;
       if (pos === n) {
         examined++;
-        // 对于已知剩余雷数: 必须 placed === fixedRemMines
-        // 对于未知剩余雷数: 所有placed均合法
         if (isUnknown || placed === fixedRemMines) {
           totalValid++;
-          const total = usedMines + placed;   // 总雷数
+          const total = usedMines + placed;
           for (let k = 0; k < n; k++) if (asg[k] === 1) overallCnt[k]++;
           
           if (!distMap.has(total)) {
@@ -422,12 +441,10 @@ function startCalc() {
     }
     mineDist.sort((a, b) => a.totalMines - b.totalMines);
     
-    // 显示结果
-    curTotalMine = null;   // 默认整体概率
+    curTotalMine = null;
     for (let i = 0; i < R; i++) for (let j = 0; j < C; j++) updateCell(i, j);
     showResults();
     
-    // 传入剩余雷数范围以便展示
     const minRem = minTotalMine - flagged;
     const maxRem = maxTotalMine - flagged;
     updateResultPanel(totalValid, examined, calcTime, totalTime, 
@@ -441,7 +458,6 @@ function startCalc() {
     tip(`计算完成: ${totalValid}种布局 · 总雷数范围 ${minTotalMine}~${maxTotalMine} · 剩余雷数 ${minRem}~${maxRem}`);
   }, 10);
 }
-
 // ========== 更新结果面板 ==========
 function updateResultPanel(total, examined, calcTime, totalTime, 
                            minTotal, maxTotal, minRem, maxRem, distArr) {
@@ -450,7 +466,6 @@ function updateResultPanel(total, examined, calcTime, totalTime,
   const distDiv = document.getElementById('mineDistList');
   basic.innerHTML = ''; perf.innerHTML = ''; distDiv.innerHTML = '';
   
-  // 基本信息 - 重点显示总雷数和剩余雷数
   let basicHtml = `
     <div class="result-item"><span class="result-label">总耗时</span><span class="result-value highlight">${formatTime(totalTime)}</span></div>
     <div class="result-item"><span class="result-label">枚举布局</span><span class="result-value">${examined.toLocaleString()}</span></div>
@@ -473,7 +488,6 @@ function updateResultPanel(total, examined, calcTime, totalTime,
   }
   basic.innerHTML = basicHtml;
   
-  // 性能
   const lpms = calcTime ? examined / calcTime : 0;
   const msl = calcTime / examined || 0;
   perf.innerHTML = `
@@ -483,11 +497,9 @@ function updateResultPanel(total, examined, calcTime, totalTime,
     <div class="performance-item"><div class="performance-label">每有效</div><div class="performance-value">${(calcTime/total).toFixed(3)}ms</div></div>` : ''}
   `;
   
-  // 雷数分布：显示总雷数（并隐含剩余雷数）
   if (isUnknown && distArr.length) {
     document.getElementById('mineDistSection').style.display = 'block';
     const maxCnt = Math.max(...distArr.map(d => d.count));
-    // 整体入口
     const allItem = document.createElement('div');
     allItem.className = 'mine-dist-item overall active';
     allItem.dataset.total = 'overall';
@@ -498,7 +510,7 @@ function updateResultPanel(total, examined, calcTime, totalTime,
     
     distArr.forEach(d => {
       const totalM = d.totalMines;
-      const rem = totalM - flagged;   // 剩余雷数
+      const rem = totalM - flagged;
       const per = (d.count / total * 100).toFixed(1);
       const item = document.createElement('div');
       item.className = 'mine-dist-item';
@@ -516,7 +528,6 @@ function updateResultPanel(total, examined, calcTime, totalTime,
     document.getElementById('mineDistSection').style.display = 'none';
   }
 }
-
 function switchMineView(totalMine) {
   curTotalMine = totalMine;
   const isOverall = (totalMine === null);
@@ -530,7 +541,6 @@ function switchMineView(totalMine) {
       updateCell(i, j);
     }
   }
-  // 更新选中样式
   document.querySelectorAll('.mine-dist-item').forEach(el => {
     el.classList.remove('active');
     if (el.dataset.total === 'overall' && isOverall) el.classList.add('active');
@@ -544,7 +554,6 @@ function switchMineView(totalMine) {
     showCurBadge(`总雷 ${totalMine} · 剩余雷 ${rem}`);
   }
 }
-
 // ========== UI辅助 ==========
 function showCalcBtn() { document.querySelector('.reset-calc').style.display = 'inline-block'; document.querySelector('.calc').style.display = 'none'; }
 function hideCalcBtn() { document.querySelector('.reset-calc').style.display = 'none'; document.querySelector('.calc').style.display = 'inline-block'; }
@@ -554,7 +563,6 @@ function hideCurBadge() { document.getElementById('curMineDisplay').style.displa
 function showCurBadge(txt) { const b = document.getElementById('curMineDisplay'); b.textContent = txt; b.style.display = 'block'; }
 function stopCalc() { isRunning = false; tip("计算已停止"); hideCalcBtn(); }
 function formatTime(ms) { return ms < 1e4 ? `${ms.toFixed(2)}ms` : `${(ms/1000).toFixed(2)}s`; }
-
 // ========== 导入/导出 ==========
 function showIE() { document.getElementById('ieModal').style.display = 'flex'; exportBoard(); }
 function hideIE() { document.getElementById('ieModal').style.display = 'none'; }
@@ -582,7 +590,7 @@ function importBoard() {
     document.getElementById('rows').value = nr;
     document.getElementById('cols').value = nc;
     document.getElementById('mines').value = mm;
-    resetAll();  // 这会重置flagged及grid
+    resetAll();
     for (let i = 0; i < nr && i + 1 < lines.length; i++) {
       const ln = lines[i + 1].trim();
       if (ln.length < nc) continue;
@@ -598,7 +606,6 @@ function importBoard() {
   } catch (e) { tip('导入失败'); }
 }
 document.getElementById('ieModal').addEventListener('click', e => { if (e.target === e.currentTarget) hideIE(); });
-
 // ========== 启动 ==========
 window.onload = () => {
   document.getElementById('mines').value = '-';
